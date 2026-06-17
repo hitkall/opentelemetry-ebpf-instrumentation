@@ -1,0 +1,75 @@
+name: OTel Collector example build
+
+# Builds the examples/otel-collector distribution with the OpenTelemetry
+# Collector Builder (ocb) to catch component-version drift between the
+# example's builder-config.yaml and the Collector release line OBI depends
+# on (see go.mod). Runs only when the example or go.mod changes.
+
+on:
+  push:
+    branches: [main, release-*]
+    paths:
+      - "examples/otel-collector/**"
+      - "go.mod"
+      - ".github/workflows/pull_request_otel_collector_example.yml"
+  pull_request:
+    branches: [main, release-*]
+    paths:
+      - "examples/otel-collector/**"
+      - "go.mod"
+      - ".github/workflows/pull_request_otel_collector_example.yml"
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref (commit, branch, or tag) to check out"
+        required: false
+        type: string
+
+concurrency:
+  group: pr-otel-collector-example-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ocb build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0 # zizmor: ignore[cache-poisoning] go.sum verifies module integrity
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: Resolve ocb version from go.mod
+        id: ocb
+        shell: bash
+        run: |
+          # Pin ocb to the Collector release line OBI itself depends on, so the
+          # example is always built against a compatible builder.
+          version=$(grep -E '^\s*go\.opentelemetry\.io/collector v[0-9]' go.mod | awk '{print $2}')
+          if [ -z "$version" ]; then
+            echo "could not determine collector version from go.mod" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Using ocb $version"
+
+      - name: Install ocb
+        shell: bash
+        run: go install go.opentelemetry.io/collector/cmd/builder@${{ steps.ocb.outputs.version }}
+
+      - name: Build collector distribution
+        working-directory: examples/otel-collector
+        shell: bash
+        run: builder --config ./builder-config.yaml
